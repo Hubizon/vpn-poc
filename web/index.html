@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>vpn-poc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { margin-bottom: .2rem; }
+  section { border: 1px solid #8884; border-radius: .5rem; padding: 1rem; margin: 1rem 0; }
+  h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+  input, button { font: inherit; padding: .4rem .6rem; }
+  input { width: 22rem; max-width: 100%; }
+  code { word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #8883; }
+  .direct { color: #2a9d3f; } .relayed { color: #d08a00; } .offline { color: #999; }
+  #log { max-height: 12rem; overflow: auto; font: .85rem monospace; white-space: pre-wrap; }
+  .in { color: #2a7fd0; }
+</style>
+</head>
+<body>
+<h1>vpn-poc</h1>
+<div>Your peer ID: <code id="me">&hellip;</code></div>
+
+<section id="join">
+  <h2>Network</h2>
+  <div id="join-form">
+    <button onclick="join('')">Create new network</button>
+    or join one:
+    <input id="code" placeholder="network code">
+    <button onclick="join(document.getElementById('code').value)">Join</button>
+  </div>
+  <div id="joined" hidden>
+    Network code (share it with your peers, keep it secret): <code id="net-code"></code>
+  </div>
+  <div id="error" style="color:#c33"></div>
+</section>
+
+<section>
+  <h2>Status</h2>
+  Your virtual IP: <b id="vip">&hellip;</b> <span id="vpn-error" style="color:#c33"></span><br>
+  DHT peers known: <b id="dht">0</b><br>
+  Relay address: <code id="relay">searching for a relay&hellip;</code>
+</section>
+
+<section>
+  <h2>Peers</h2>
+  <table>
+    <thead><tr><th>Peer</th><th>Virtual IP</th><th>Member</th><th>Connection</th><th>Ping</th></tr></thead>
+    <tbody id="peers"><tr><td colspan="5" class="offline">none yet</td></tr></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Messages</h2>
+  <div id="chat"></div>
+  <p>
+    <select id="to"></select>
+    <input id="text" placeholder="message" onkeydown="if (event.key === 'Enter') sendMessage()">
+    <button onclick="sendMessage()">Send</button>
+  </p>
+</section>
+
+<section>
+  <h2>Log</h2>
+  <div id="log"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const ELLIPSIS = '\u2026', LEFT = '\u2190', RIGHT = '\u2192';
+const short = id => id.slice(0, 6) + ELLIPSIS + id.slice(-6);
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  $('error').textContent = r.ok ? '' : await r.text();
+  refresh();
+}
+
+const join = code => post('/api/join', { code });
+
+function sendMessage() {
+  const peer = $('to').value, text = $('text').value.trim();
+  if (!peer || !text) return;
+  $('text').value = '';
+  post('/api/send', { peer, text });
+}
+
+// Rebuilds a node's children only when the content changed, so inputs keep focus.
+function setHtml(el, html) { if (el.innerHTML !== html) el.innerHTML = html; }
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch('/api/state')).json(); } catch { return; }
+
+  $('me').textContent = s.peer_id;
+  $('vip').textContent = s.virtual_ip || 'adapter not active';
+  $('vpn-error').textContent = s.vpn_error || '';
+  $('dht').textContent = s.dht_peers;
+  $('relay').textContent = s.relay || 'searching for a relay' + ELLIPSIS;
+  $('join-form').hidden = !!s.network_code;
+  $('joined').hidden = !s.network_code;
+  $('net-code').textContent = s.network_code || '';
+
+  setHtml($('peers'), s.peers.length ? s.peers.map(p => `
+    <tr><td title="${p.id}">${short(p.id)}</td>
+    <td><code>${p.ip}</code></td>
+    <td>${p.authenticated ? 'yes' : 'verifying' + ELLIPSIS}</td>
+    <td class="${p.connection}">${p.connection}</td>
+    <td>${p.rtt_ms == null ? '' : p.rtt_ms + ' ms'}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="offline">none yet</td></tr>');
+
+  const online = s.peers.filter(p => p.authenticated && p.connection !== 'offline');
+  const selected = $('to').value;
+  setHtml($('to'), online.map(p =>
+    `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${short(p.id)}</option>`).join(''));
+
+  setHtml($('chat'), s.chat.map(m =>
+    `<div class="${m.incoming ? 'in' : ''}"><b>${m.incoming ? LEFT : RIGHT} ${short(m.peer)}</b> ${esc(m.text)}</div>`).join(''));
+
+  const log = $('log'), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
+  setHtml(log, esc(s.log.join('\n')));
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>
